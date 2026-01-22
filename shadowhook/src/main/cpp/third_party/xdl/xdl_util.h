@@ -43,6 +43,16 @@
 #endif
 #define XDL_UTIL_VDSO_BASENAME "[vdso]"
 
+#if defined(__arm__)
+#define XDL_UTIL_ABI_STR "armeabi-v7a"
+#elif defined(__aarch64__)
+#define XDL_UTIL_ABI_STR "arm64-v8a"
+#elif defined(__i386__)
+#define XDL_UTIL_ABI_STR "x86"
+#elif defined(__x86_64__)
+#define XDL_UTIL_ABI_STR "x86_64"
+#endif
+
 #define XDL_UTIL_TEMP_FAILURE_RETRY(exp)   \
   ({                                       \
     __typeof__(exp) _rc;                   \

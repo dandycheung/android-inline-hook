@@ -36,6 +36,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "linux_syscall_support_android_ext.h"
 #include "sh_log.h"
 #include "sh_sig.h"
 #include "shadowhook.h"
@@ -168,7 +169,7 @@ size_t sh_util_get_arm_cpu_features(void) {
 void sh_util_init(void) {
   // init system uptime
   struct sysinfo info;
-  sysinfo(&info);
+  sys_sysinfo(&info);
   sh_util_system_uptime = info.uptime;
 
   // init pagesize
@@ -655,7 +656,7 @@ size_t sh_util_snprintf(char *buffer, size_t buffer_size, const char *format, ..
 
 time_t sh_util_get_process_uptime(void) {
   struct sysinfo info;
-  sysinfo(&info);
+  sys_sysinfo(&info);
   if (__predict_false(info.uptime < sh_util_system_uptime)) return 0;
   return info.uptime - sh_util_system_uptime;
 }

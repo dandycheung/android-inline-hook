@@ -95,7 +95,6 @@ static sh_trampo_mgr_t sh_hub_trampo_mgr;
 static pthread_key_t sh_hub_stack_tls_key;
 static sh_hub_stack_t *sh_hub_stack_cache;
 static uint8_t *sh_hub_stack_cache_used;
-static pthread_key_t sh_hub_stack_reserved_tls_key;
 
 // global data for trampoline template
 static uintptr_t sh_hub_trampo_code_start;
@@ -213,7 +212,7 @@ __attribute__((always_inline)) static sh_hub_stack_t *sh_hub_stack_create(void) 
   // get stack from global cache
   for (size_t i = 0; i < SH_HUB_THREAD_MAX; i++) {
     uint8_t *used = &(sh_hub_stack_cache_used[i]);
-    if (0 == *used) {
+    if (0 == __atomic_load_n(used, __ATOMIC_RELAXED)) {
       uint8_t expected = 0;
       if (__atomic_compare_exchange_n(used, &expected, 1, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
         sh_hub_stack_t *stack = &(sh_hub_stack_cache[i]);
@@ -244,25 +243,17 @@ static void sh_hub_stack_destroy(void *buf) {
     // return stack to global cache
     size_t i = ((uintptr_t)buf - (uintptr_t)sh_hub_stack_cache) / sizeof(sh_hub_stack_t);
     uint8_t *used = &(sh_hub_stack_cache_used[i]);
-    if (1 != *used) abort();
+    if (1 != __atomic_load_n(used, __ATOMIC_RELAXED)) abort();
     __atomic_store_n(used, 0, __ATOMIC_RELEASE);
     SH_LOG_DEBUG("hub: return stack to global cache[%zu] %p", i, buf);
   } else {
     // munmap stack
     sh_safe_munmap(buf, SH_HUB_STACK_SIZE);
   }
-  sh_safe_pthread_setspecific(sh_hub_stack_reserved_tls_key, (const void *)1);
 }
 
 static int sh_hub_init(void) {
-  static int init_r = -1;
-  if (__predict_true(-1 != init_r)) return init_r;
-
-  // init TLS key
   if (__predict_false(0 != pthread_key_create(&sh_hub_stack_tls_key, sh_hub_stack_destroy))) goto err;
-  if (__predict_false(0 != pthread_key_create(&sh_hub_stack_reserved_tls_key, NULL))) goto err;
-
-  // init hub's stack cache
   if (__predict_false(NULL == (sh_hub_stack_cache = malloc(SH_HUB_THREAD_MAX * sizeof(sh_hub_stack_t)))))
     goto err;
   if (__predict_false(NULL == (sh_hub_stack_cache_used = calloc(SH_HUB_THREAD_MAX, sizeof(uint8_t)))))
@@ -293,20 +284,27 @@ static int sh_hub_init(void) {
   // init hub's trampoline manager
   sh_trampo_init_mgr(&sh_hub_trampo_mgr, SH_HUB_TRAMPO_ANON_PAGE_NAME, trampo_size, 0);
 
-  init_r = 0;
-  return init_r;
+  return 0;
 
 err:
-  init_r = SHADOWHOOK_ERRNO_INIT_HUB;
+  return SHADOWHOOK_ERRNO_INIT_HUB;
+}
+
+static int sh_hub_lazy_init_once(void) {
+  static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+  static int init_r = -1;
+
+  if (__predict_true(-1 != init_r)) return init_r;
+
+  pthread_mutex_lock(&lock);
+  if (-1 == init_r) init_r = sh_hub_init();
+  pthread_mutex_unlock(&lock);
+
   return init_r;
 }
 
 static void *sh_hub_push_stack(sh_hub_t *self, void *return_address) {
-  sh_hub_stack_t *reserved_stack =
-      (sh_hub_stack_t *)sh_safe_pthread_getspecific(sh_hub_stack_reserved_tls_key);
-  if (__predict_false(reserved_stack != NULL)) goto end;
-
-  // get stack, create stack(only once)
+  // get stack, create stack
   sh_hub_stack_t *stack = (sh_hub_stack_t *)sh_safe_pthread_getspecific(sh_hub_stack_tls_key);
   if (__predict_false(NULL == stack)) {
     if (__predict_false(NULL == (stack = sh_hub_stack_create()))) goto end;
@@ -368,7 +366,7 @@ void sh_hub_pop_stack(void *return_address) {
 }
 
 int sh_hub_create(sh_hub_t **self) {
-  int r = sh_hub_init();
+  int r = sh_hub_lazy_init_once();
   if (0 != r) return r;
 
   sh_hub_t *obj = malloc(sizeof(sh_hub_t));
@@ -448,7 +446,7 @@ bool sh_hub_is_proxy_duplicated(sh_hub_t *self, uintptr_t proxy_func) {
 
 int sh_hub_add_proxy(sh_hub_t *self, uintptr_t proxy_func) {
   // check duplicated proxy function
-  if (sh_hub_is_proxy_duplicated(self, proxy_func)) return SHADOWHOOK_ERRNO_HOOK_HUB_DUP;
+  if (sh_hub_is_proxy_duplicated(self, proxy_func)) return SHADOWHOOK_ERRNO_HOOK_DUP;
 
   // try to re-enable an exists item
   sh_hub_proxy_t *proxy;

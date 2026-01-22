@@ -26,6 +26,8 @@
 
 #include "sh_log.h"
 
+#define SH_ERRNO_INTERNAL_AGAIN -1
+
 #define SH_ERRNO_SET_RET_ERRNUM(errnum) SH_ERRNO_SET_RET((errnum), (errnum))
 #define SH_ERRNO_SET_RET_FAIL(errnum)   SH_ERRNO_SET_RET((errnum), -1)
 #define SH_ERRNO_SET_RET_NULL(errnum)   SH_ERRNO_SET_RET((errnum), NULL)

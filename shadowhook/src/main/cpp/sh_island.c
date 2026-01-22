@@ -76,13 +76,13 @@ ok:
               range_low, range_high);
 }
 
-void sh_island_free(sh_island_t *self) {
+void sh_island_free(sh_island_t *self, uintptr_t load_bias) {
   if (0 == self->addr) return;
 
   if (SH_ISLAND_TYPE_ANON_PAGE == self->type) {
     sh_trampo_free(&sh_island_trampo_mgr, self->addr);
   } else if (SH_ISLAND_TYPE_ELF_GAP == self->type) {
-    sh_elf_free(self->addr, self->size);
+    sh_elf_free(self->addr, self->size, load_bias);
   }
   self->addr = 0;
 }

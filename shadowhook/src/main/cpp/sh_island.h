@@ -38,7 +38,7 @@ void sh_island_init(void);
 // range: [range_low, range_high]
 void sh_island_alloc(sh_island_t *self, size_t size, uintptr_t range_low, uintptr_t range_high, uintptr_t pc,
                      sh_addr_info_t *addr_info);
-void sh_island_free(sh_island_t *self);
+void sh_island_free(sh_island_t *self, uintptr_t load_bias);
 
 void sh_island_free_after_dlclose(sh_island_t *self);
 void sh_island_cleanup_after_dlclose(uintptr_t load_bias);

@@ -22,6 +22,7 @@
 // Created by Kelun Cai (caikelun@bytedance.com) on 2021-04-11.
 
 #pragma once
+#include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
@@ -31,6 +32,8 @@ void sh_safe_set_orig_addr(uintptr_t target_addr, uintptr_t orig_addr);
 
 __attribute__((always_inline)) void *sh_safe_pthread_getspecific(pthread_key_t key);
 __attribute__((always_inline)) int sh_safe_pthread_setspecific(pthread_key_t key, const void *value);
+__attribute__((always_inline)) int sh_safe_pthread_mutex_lock(pthread_mutex_t *mutex);
+__attribute__((always_inline)) int sh_safe_pthread_mutex_unlock(pthread_mutex_t *mutex);
 __attribute__((always_inline)) void sh_safe_abort(void);
 
 __attribute__((always_inline)) void *sh_safe_mmap(void *addr, size_t length, int prot, int flags, int fd,

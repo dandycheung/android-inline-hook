@@ -19,18 +19,48 @@
 // SOFTWARE.
 //
 
-// Created by Kelun Cai (caikelun@bytedance.com) on 2024-12-30.
+// Created by Kelun Cai (caikelun@bytedance.com) on 2025-11-13.
 
 #pragma once
+#include <pthread.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
-#include "sh_linker.h"
+#include "queue.h"
 
-// arm:   size = 8
-// arm64: size = 8 or 16 or 20
-uintptr_t sh_elf_alloc(size_t size, uintptr_t range_low, uintptr_t range_high, uintptr_t pc,
-                       sh_addr_info_t *addr_info);
-void sh_elf_free(uintptr_t addr, size_t size, uintptr_t load_bias);
+typedef struct sh_ref {
+  pthread_mutex_t lock;
+  int count;
+  uint32_t destroy_ts;
+  TAILQ_ENTRY(sh_ref, ) link;
+} sh_ref_t;
 
-void sh_elf_cleanup_after_dlclose(uintptr_t load_bias);
+typedef TAILQ_HEAD(sh_ref_queue, sh_ref, ) sh_ref_queue_t;
+
+void sh_ref_init(sh_ref_t *self);
+void sh_ref_uninit(sh_ref_t *self);
+
+void sh_ref_lock(sh_ref_t *self);
+void sh_ref_unlock(sh_ref_t *self);
+
+void sh_ref_increment_count(sh_ref_t *self);
+void sh_ref_decrement_count(sh_ref_t *self);
+
+bool sh_ref_is_destroyed(sh_ref_t *self);
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wpadded"
+typedef struct {
+  sh_ref_queue_t queue;
+  pthread_mutex_t lock;
+  void (*destroy)(sh_ref_t *);
+  uint32_t delay_sec;
+} sh_ref_mgr_t;
+#pragma clang diagnostic pop
+
+#define SH_REF_MGR_INITIALIZER(self, destroy, delay_sec) \
+  {TAILQ_HEAD_INITIALIZER((self).queue), PTHREAD_MUTEX_INITIALIZER, (destroy), (delay_sec)}
+
+void sh_ref_delayed_destroy(sh_ref_t *self, sh_ref_mgr_t *mgr);

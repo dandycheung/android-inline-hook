@@ -32,20 +32,24 @@
 #include <sys/mman.h>
 
 #include "sh_config.h"
+#include "sh_errno.h"
 #include "sh_linker.h"
 #include "sh_log.h"
+#include "sh_ref.h"
 #include "sh_sig.h"
 #include "sh_trampo.h"
 #include "sh_util.h"
 #include "shadowhook.h"
 #include "xdl.h"
 
-#define SH_ELF_DELAY_SEC 3
+#define SH_ELF_TRAMPO_DELAY_SEC 3
 
 #if defined(__arm__)
-#define SH_ELF_UNIT_SIZE 8
+#define SH_ELF_UNIT_SIZE      8
+#define SH_ELF_MIN_ALLOC_SIZE 8
 #elif defined(__aarch64__)
-#define SH_ELF_UNIT_SIZE 4
+#define SH_ELF_UNIT_SIZE      4
+#define SH_ELF_MIN_ALLOC_SIZE 8
 #endif
 
 extern __attribute((weak)) unsigned long int getauxval(unsigned long int);
@@ -134,6 +138,7 @@ typedef struct sh_elf {
   sh_elf_gap_t *gaps;
   size_t gaps_num;
   sh_elf_useless_t *useless;
+  sh_ref_t ref;
   TAILQ_ENTRY(sh_elf, ) link;
 } sh_elf_t;
 typedef TAILQ_HEAD(sh_elf_queue, sh_elf, ) sh_elf_queue_t;
@@ -192,16 +197,30 @@ static bool sh_elf_is_loaded_by_kernel(uintptr_t load_bias) {
   return false;
 }
 
-static void sh_elf_destroy(sh_elf_t *elf) {
-  for (size_t i = 0; i < elf->gaps_num; i++) {
-    sh_elf_gap_t *gap = &elf->gaps[i];
+static void sh_elf_destroy(sh_elf_t *self) {
+  SH_LOG_INFO("elf: delayed destroy, load_bias %p", self->dli_fbase);
+
+  for (size_t i = 0; i < self->gaps_num; i++) {
+    sh_elf_gap_t *gap = &self->gaps[i];
     if (NULL != gap->flags) free(gap->flags);
   }
-  if (NULL != elf->gaps) free(elf->gaps);
-  free(elf);
+  if (NULL != self->gaps) free(self->gaps);
+  sh_ref_uninit(&self->ref);
+  free(self);
 }
 
-static int sh_elf_get_gaps_from_phdr(sh_elf_t *elf, sh_addr_info_t *addr_info) {
+static void sh_elf_destroy_by_ref(sh_ref_t *ref) {
+  sh_elf_t *self = SH_UTIL_CONTAINER_OF(ref, sh_elf_t, ref);
+  sh_elf_destroy(self);
+}
+
+static void sh_elf_delayed_destroy(sh_elf_t *self) {
+  SH_LOG_INFO("elf: destroy, load_bias %p", self->dli_fbase);
+  static sh_ref_mgr_t mgr = SH_REF_MGR_INITIALIZER(mgr, sh_elf_destroy_by_ref, 0);
+  sh_ref_delayed_destroy(&self->ref, &mgr);
+}
+
+static int sh_elf_get_gaps_from_phdr(sh_elf_t *self, sh_addr_info_t *addr_info) {
   bool elf_loaded_by_kernel = sh_elf_is_loaded_by_kernel((uintptr_t)addr_info->dli_fbase);
 
   for (size_t i = 0; i < addr_info->dlpi_phnum; i++) {
@@ -244,33 +263,33 @@ static int sh_elf_get_gaps_from_phdr(sh_elf_t *elf, sh_addr_info_t *addr_info) {
       gap_start = cur_page_end;
       gap_end = next_page_start;
     }
-    if (gap_end - gap_start < SH_ELF_UNIT_SIZE) continue;
+    if (gap_end - gap_start < SH_ELF_MIN_ALLOC_SIZE) continue;
 
     SH_LOG_INFO("elf: find phdr gap %" PRIxPTR "-%" PRIxPTR "(load_bias %" PRIxPTR ", %" PRIxPTR "-%" PRIxPTR
                 ")",
                 gap_start, gap_end, (uintptr_t)addr_info->dli_fbase,
                 gap_start - (uintptr_t)addr_info->dli_fbase, gap_end - (uintptr_t)addr_info->dli_fbase);
 
-    sh_elf_gap_t *gap = &elf->gaps[elf->gaps_num];
-    elf->gaps_num++;
+    sh_elf_gap_t *gap = &self->gaps[self->gaps_num];
+    self->gaps_num++;
     gap->start = gap_start;
     gap->end = gap_end;
     gap->trampo_count = (gap->end - gap->start) / SH_ELF_UNIT_SIZE;
     gap->flags = calloc(1, sizeof(uint32_t) * gap->trampo_count);
-    if (NULL == gap->flags) return -1;
+    if (NULL == gap->flags) return SHADOWHOOK_ERRNO_OOM;
   }
 
   return 0;
 }
 
-static void sh_elf_get_gaps_from_useless_symbols(sh_elf_t *elf) {
-  void *handle = xdl_open(elf->useless->lib_name, XDL_DEFAULT);
+static void sh_elf_get_gaps_from_useless_symbols(sh_elf_t *self) {
+  void *handle = xdl_open(self->useless->lib_name, XDL_DEFAULT);
   if (NULL == handle) return;
 
   uint8_t api_level = (uint8_t)sh_util_get_api_level();
 
-  for (size_t i = 0; i < elf->useless->symbols_num; i++) {
-    sh_elf_useless_symbol_t *sym = &elf->useless->symbols[i];
+  for (size_t i = 0; i < self->useless->symbols_num; i++) {
+    sh_elf_useless_symbol_t *sym = &self->useless->symbols[i];
 
     if (sym->min_api_level <= api_level && api_level <= sym->max_api_level) {
       void *sym_addr = NULL;
@@ -285,11 +304,11 @@ static void sh_elf_get_gaps_from_useless_symbols(sh_elf_t *elf) {
 
       uintptr_t gap_start = SH_UTIL_ALIGN_END(sym_addr, SH_ELF_UNIT_SIZE);
       uintptr_t gap_end = SH_UTIL_ALIGN_START((uintptr_t)sym_addr + sym_sz, SH_ELF_UNIT_SIZE);
-      if (gap_end - gap_start < SH_ELF_UNIT_SIZE) continue;
+      if (gap_end - gap_start < SH_ELF_MIN_ALLOC_SIZE) continue;
       SH_LOG_INFO("elf: lazy find sym gap %" PRIxPTR "-%" PRIxPTR, gap_start, gap_end);
 
-      sh_elf_gap_t *gap = &elf->gaps[elf->gaps_num];
-      elf->gaps_num++;
+      sh_elf_gap_t *gap = &self->gaps[self->gaps_num];
+      self->gaps_num++;
       gap->start = gap_start;
       gap->end = gap_end;
       gap->trampo_count = (gap->end - gap->start) / SH_ELF_UNIT_SIZE;
@@ -302,29 +321,30 @@ end:
   if (NULL != handle) xdl_close(handle);
 }
 
-static sh_elf_t *sh_elf_create(sh_addr_info_t *addr_info, char *fname) {
-  sh_elf_t *elf = malloc(sizeof(sh_elf_t));
-  if (NULL == elf) return NULL;
-  elf->dli_fbase = addr_info->dli_fbase;
-  elf->dlpi_phdr = addr_info->dlpi_phdr;
-  elf->dlpi_phnum = addr_info->dlpi_phnum;
-  elf->gaps = NULL;
-  elf->gaps_num = 0;
-  elf->useless = NULL;
+static int sh_elf_create(sh_elf_t **self, sh_addr_info_t *addr_info) {
+  *self = malloc(sizeof(sh_elf_t));
+  if (NULL == *self) return SHADOWHOOK_ERRNO_OOM;
+  (*self)->dli_fbase = addr_info->dli_fbase;
+  (*self)->dlpi_phdr = addr_info->dlpi_phdr;
+  (*self)->dlpi_phnum = addr_info->dlpi_phnum;
+  (*self)->gaps = NULL;
+  (*self)->gaps_num = 0;
+  (*self)->useless = NULL;
+  sh_ref_init(&(*self)->ref);
 
   size_t gaps_max = 0;
   for (size_t i = 0; i < addr_info->dlpi_phnum; i++) {
     if (PT_LOAD == addr_info->dlpi_phdr[i].p_type) gaps_max++;
   }
-  if (NULL != fname) {
+  if (NULL != addr_info->dli_fname && '\0' != addr_info->dli_fname[0]) {
     for (size_t i = 0; i < sizeof(sh_elf_useless) / sizeof(sh_elf_useless[0]); i++) {
       sh_elf_useless_t *lib = &sh_elf_useless[i];
-      if (sh_util_match_pathname(fname, lib->lib_name)) {
+      if (sh_util_match_pathname(addr_info->dli_fname, lib->lib_name)) {
         uint8_t api_level = (uint8_t)sh_util_get_api_level();
         for (size_t j = 0; j < lib->symbols_num; j++) {
           sh_elf_useless_symbol_t *sym = &lib->symbols[j];
           if (sym->min_api_level <= api_level && api_level <= sym->max_api_level) {
-            elf->useless = lib;
+            (*self)->useless = lib;
             gaps_max++;
           }
         }
@@ -333,34 +353,82 @@ static sh_elf_t *sh_elf_create(sh_addr_info_t *addr_info, char *fname) {
     }
   }
 
+  int r = 0;
   if (gaps_max > 0) {
-    elf->gaps = calloc(1, sizeof(sh_elf_gap_t) * gaps_max);
-    if (NULL == elf->gaps) goto err;
+    (*self)->gaps = calloc(1, sizeof(sh_elf_gap_t) * gaps_max);
+    if (NULL == (*self)->gaps) {
+      r = SHADOWHOOK_ERRNO_OOM;
+      goto err;
+    }
 
-    if (0 != sh_elf_get_gaps_from_phdr(elf, addr_info)) goto err;
+    if (0 != (r = sh_elf_get_gaps_from_phdr(*self, addr_info))) goto err;
   }
 
-  return elf;
+  return 0;
 
 err:
-  sh_elf_destroy(elf);
-  return NULL;
+  sh_elf_destroy(*self);
+  *self = NULL;
+  return r;
 }
 
-static sh_elf_t *sh_elf_find_by_pc(uintptr_t pc) {
+static sh_elf_t *sh_elf_find_by_addr(uintptr_t addr) {
+  pthread_mutex_lock(&sh_elfs_lock);
+  sh_elf_t *self;
+  TAILQ_FOREACH(self, &sh_elfs, link) {
+    if (sh_linker_is_addr_in_elf_pt_load(addr, self->dli_fbase, self->dlpi_phdr, self->dlpi_phnum)) {
+      sh_ref_increment_count(&self->ref);
+      break;
+    }
+  }
+  pthread_mutex_unlock(&sh_elfs_lock);
+  return self;
+}
+
+static sh_elf_t *sh_elf_find_by_load_bias(uintptr_t load_bias) {
+  pthread_mutex_lock(&sh_elfs_lock);
+  sh_elf_t *self;
+  TAILQ_FOREACH(self, &sh_elfs, link) {
+    if (self->dli_fbase == (void *)load_bias) {
+      sh_ref_increment_count(&self->ref);
+      break;
+    }
+  }
+  pthread_mutex_unlock(&sh_elfs_lock);
+  return self;
+}
+
+static sh_elf_t *sh_elf_insert(sh_elf_t *self) {
+  pthread_mutex_lock(&sh_elfs_lock);
   sh_elf_t *elf;
   TAILQ_FOREACH(elf, &sh_elfs, link) {
-    if (sh_linker_is_addr_in_elf_pt_load(pc, elf->dli_fbase, elf->dlpi_phdr, elf->dlpi_phnum)) return elf;
+    if (elf->dli_fbase == self->dli_fbase) {
+      sh_ref_increment_count(&elf->ref);
+      break;
+    }
   }
-  return NULL;
+  if (NULL == elf) {
+    TAILQ_INSERT_TAIL(&sh_elfs, self, link);
+    sh_ref_increment_count(&self->ref);
+  }
+  pthread_mutex_unlock(&sh_elfs_lock);
+
+  if (NULL == elf) {
+    SH_LOG_INFO("elf: create, load_bias %p", self->dli_fbase);
+    return self;
+  } else {
+    sh_elf_destroy(self);
+    return elf;
+  }
 }
 
 // range: [range_low, range_high]
-static uintptr_t sh_elf_alloc_in_gap(size_t size, uintptr_t range_low, uintptr_t range_high, sh_elf_t *elf,
-                                     sh_elf_gap_t *gap, uint32_t now) {
+static uintptr_t sh_elf_alloc_in_gap(sh_elf_t *self, sh_elf_gap_t *gap, size_t size, uintptr_t range_low,
+                                     uintptr_t range_high, uint32_t now) {
   // arm   : size = 8             , SH_ELF_UNIT_SIZE = 8
   // arm64 : size = 8 or 16 or 20 , SH_ELF_UNIT_SIZE = 4
   size_t n_unit = size / SH_ELF_UNIT_SIZE;  // the remainder is definitely 0
+  if (gap->trampo_count < n_unit) return 0;
 
   for (size_t i = 0; i < gap->trampo_count - n_unit + 1; i++) {
     // check current trampo's range
@@ -375,7 +443,7 @@ static uintptr_t sh_elf_alloc_in_gap(size_t size, uintptr_t range_low, uintptr_t
 
       // check timestamp
       uint32_t ts = gap->flags[j] & 0x7FFFFFFF;
-      if (now <= ts || now - ts <= SH_ELF_DELAY_SEC) break;
+      if (now <= ts || now - ts <= SH_ELF_TRAMPO_DELAY_SEC) break;
     }
     if (j < i + n_unit) {
       i = j;  // skip unavailable unit(s)
@@ -390,104 +458,135 @@ static uintptr_t sh_elf_alloc_in_gap(size_t size, uintptr_t range_low, uintptr_t
 
     SH_LOG_INFO("elf: alloc addr %" PRIxPTR "(load_bias %" PRIxPTR ", %" PRIxPTR
                 "), size %zu, idx [%zu, %zu)",
-                addr, (uintptr_t)elf->dli_fbase, addr - (uintptr_t)elf->dli_fbase, size, i, i + n_unit);
+                addr, (uintptr_t)self->dli_fbase, addr - (uintptr_t)self->dli_fbase, size, i, i + n_unit);
     return addr;
   }
 
   return 0;
 }
 
-uintptr_t sh_elf_alloc(size_t size, uintptr_t range_low, uintptr_t range_high, uintptr_t pc,
-                       sh_addr_info_t *addr_info) {
-  size = SH_UTIL_ALIGN_END(size, SH_ELF_UNIT_SIZE);
-  uintptr_t addr = 0;
-
-  pthread_mutex_lock(&sh_elfs_lock);
-
-  // find or create sh_elf_t object
-  sh_elf_t *elf = sh_elf_find_by_pc(pc);
-  if (NULL == elf) {
-    // get address info by pc
-    char fname[1024] = {'\0'};
-    if (NULL == addr_info->dli_fbase) {
-      if (0 != sh_linker_get_addr_info_by_addr((void *)pc, addr_info->is_sym_addr, addr_info->is_proc_start,
-                                               addr_info, true, fname, sizeof(fname)))
-        goto end;
-    } else {
-      sh_linker_get_fname_by_fbase(addr_info->dli_fbase, fname, sizeof(fname));
-    }
-
-    // create sh_elf_t object by dlinfo
-    if (NULL == (elf = sh_elf_create(addr_info, '\0' == fname[0] ? NULL : fname))) goto end;
-
-    // save new sh_elf_t object
-    TAILQ_INSERT_TAIL(&sh_elfs, elf, link);
-  }
+static uintptr_t sh_elf_alloc_in_gaps(sh_elf_t *self, size_t size, uintptr_t range_low,
+                                      uintptr_t range_high) {
+  uint32_t now = (uint32_t)sh_util_get_stable_timestamp();
 
   // try to alloc space in each gaps of current ELF
-  uint32_t now = (uint32_t)sh_util_get_stable_timestamp();
-  for (size_t i = 0; i < elf->gaps_num; i++) {
-    if (0 != (addr = sh_elf_alloc_in_gap(size, range_low, range_high, elf, &elf->gaps[i], now)))
-      goto end;  // OK
+  for (size_t i = 0; i < self->gaps_num; i++) {
+    uintptr_t addr = sh_elf_alloc_in_gap(self, &self->gaps[i], size, range_low, range_high, now);
+    if (0 != addr) return addr;  // OK
   }
 
   // lazy load all useless symbols gaps(only once), and try to alloc space again
-  if (NULL != elf->useless) {
-    size_t gaps_num_old = elf->gaps_num;
-    sh_elf_get_gaps_from_useless_symbols(elf);
-    elf->useless = NULL;
-    if (elf->gaps_num > gaps_num_old) {
+  if (NULL != self->useless) {
+    size_t gaps_num_old = self->gaps_num;
+    sh_elf_get_gaps_from_useless_symbols(self);
+    self->useless = NULL;
+    if (self->gaps_num > gaps_num_old) {
       now = (uint32_t)sh_util_get_stable_timestamp();
-      for (size_t i = gaps_num_old; i < elf->gaps_num; i++) {
-        if (0 != (addr = sh_elf_alloc_in_gap(size, range_low, range_high, elf, &elf->gaps[i], now)))
-          goto end;  // OK
+      for (size_t i = gaps_num_old; i < self->gaps_num; i++) {
+        uintptr_t addr = sh_elf_alloc_in_gap(self, &self->gaps[i], size, range_low, range_high, now);
+        if (0 != addr) return addr;  // OK
       }
     }
   }
 
-end:
-  pthread_mutex_unlock(&sh_elfs_lock);
+  return 0;  // failed
+}
+
+static int sh_elf_alloc_impl(uintptr_t *addr, size_t size, uintptr_t range_low, uintptr_t range_high,
+                             uintptr_t pc, sh_addr_info_t *addr_info) {
+  *addr = 0;
+  size = SH_UTIL_ALIGN_END(size, SH_ELF_UNIT_SIZE);
+  int r;
+
+  sh_elf_t *self = sh_elf_find_by_addr(pc);
+  if (NULL == self) {
+    if (NULL == addr_info->dli_fbase) {
+      if (0 != (r = sh_linker_get_addr_info_by_addr(addr_info, (void *)pc, addr_info->is_sym_addr,
+                                                    addr_info->is_proc_start, true)))
+        return r;
+    }
+    if (0 != (r = sh_elf_create(&self, addr_info))) return r;
+    self = sh_elf_insert(self);
+  }
+  if (NULL == addr_info->dli_fbase) {
+    // save load_bias for sh_elf_free()
+    addr_info->dli_fbase = self->dli_fbase;
+    addr_info->dlpi_phdr = self->dlpi_phdr;
+    addr_info->dlpi_phnum = self->dlpi_phnum;
+  }
+
+  sh_ref_lock(&self->ref);
+
+  if (sh_ref_is_destroyed(&self->ref)) {  // try again
+    r = SH_ERRNO_INTERNAL_AGAIN;
+  } else {
+    *addr = sh_elf_alloc_in_gaps(self, size, range_low, range_high);
+    r = 0;  // OK
+  }
+
+  sh_ref_unlock(&self->ref);
+  sh_ref_decrement_count(&self->ref);
+  return r;
+}
+
+uintptr_t sh_elf_alloc(size_t size, uintptr_t range_low, uintptr_t range_high, uintptr_t pc,
+                       sh_addr_info_t *addr_info) {
+  uintptr_t addr;
+  int r;
+  do {
+    r = sh_elf_alloc_impl(&addr, size, range_low, range_high, pc, addr_info);
+  } while (SH_ERRNO_INTERNAL_AGAIN == r);
   return addr;
 }
 
-void sh_elf_free(uintptr_t addr, size_t size) {
+void sh_elf_free(uintptr_t addr, size_t size, uintptr_t load_bias) {
+  if (__predict_false(0 == load_bias)) abort();
+  sh_elf_t *self = sh_elf_find_by_load_bias(load_bias);
+  if (NULL == self) return;
+
   uint32_t now = (uint32_t)sh_util_get_stable_timestamp();
   size = SH_UTIL_ALIGN_END(size, SH_ELF_UNIT_SIZE);
   size_t n_unit = size / SH_ELF_UNIT_SIZE;
 
-  pthread_mutex_lock(&sh_elfs_lock);
-  sh_elf_t *elf;
-  TAILQ_FOREACH(elf, &sh_elfs, link) {
-    for (size_t i = 0; i < elf->gaps_num; i++) {
-      sh_elf_gap_t *gap = &elf->gaps[i];
-      if (gap->start <= addr && addr < gap->end) {
-        size_t j = (addr - gap->start) / SH_ELF_UNIT_SIZE;
-        for (size_t k = j; k < j + n_unit; k++) {
-          gap->flags[k] = now & 0x7FFFFFFF;
-        }
-        SH_LOG_INFO("elf: free addr %" PRIxPTR "(load_bias %" PRIxPTR ", %" PRIxPTR
-                    "), size %zu, gap %zu, idx [%zu, %zu)",
-                    addr, (uintptr_t)elf->dli_fbase, addr - (uintptr_t)elf->dli_fbase, size, i, j,
-                    j + n_unit);
-        goto end;
+  sh_ref_lock(&self->ref);
+
+  for (size_t i = 0; i < self->gaps_num; i++) {
+    sh_elf_gap_t *gap = &self->gaps[i];
+    if (gap->start <= addr && addr < gap->end) {
+      size_t j = (addr - gap->start) / SH_ELF_UNIT_SIZE;
+      for (size_t k = j; k < j + n_unit; k++) {
+        gap->flags[k] = now & 0x7FFFFFFF;
       }
+      SH_LOG_INFO("elf: free addr %" PRIxPTR "(load_bias %" PRIxPTR ", %" PRIxPTR
+                  "), size %zu, gap %zu, idx [%zu, %zu)",
+                  addr, (uintptr_t)self->dli_fbase, addr - (uintptr_t)self->dli_fbase, size, i, j,
+                  j + n_unit);
+      break;
     }
   }
-end:
-  pthread_mutex_unlock(&sh_elfs_lock);
+
+  sh_ref_unlock(&self->ref);
+  sh_ref_decrement_count(&self->ref);
 }
 
 void sh_elf_cleanup_after_dlclose(uintptr_t load_bias) {
-  sh_elf_t *elf, *elf_tmp;
-
   pthread_mutex_lock(&sh_elfs_lock);
+  sh_elf_t *elf, *elf_tmp;
   TAILQ_FOREACH_SAFE(elf, &sh_elfs, link, elf_tmp) {
     if (elf->dli_fbase == (void *)load_bias) {
       TAILQ_REMOVE(&sh_elfs, elf, link);
+      sh_ref_increment_count(&elf->ref);
       break;
     }
   }
   pthread_mutex_unlock(&sh_elfs_lock);
 
-  if (NULL != elf) sh_elf_destroy(elf);
+  if (NULL != elf) {
+    sh_ref_lock(&elf->ref);
+    if (!sh_ref_is_destroyed(&elf->ref)) {
+      sh_elf_delayed_destroy(elf);
+    }
+    sh_ref_unlock(&elf->ref);
+    sh_ref_decrement_count(&elf->ref);
+  }
 }

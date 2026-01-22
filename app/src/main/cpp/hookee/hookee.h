@@ -45,7 +45,6 @@ int test_t16_cbnz_t1(int a, int b);
 int test_t16_cbnz_t1_fixaddr(int a, int b);
 int test_t16_it_t1_case1(int a, int b);
 int test_t16_it_t1_case2(int a, int b);
-int test_t16_it_t1_case3(int a, int b);
 int test_t16_instr(int a, int b);
 
 int test_t32_helper_global(int a, int b);
@@ -123,6 +122,7 @@ int test_a64_tbnz(int a, int b);
 int test_a64_tbnz_fixaddr(int a, int b);
 int test_a64_instr_b(int a, int b);
 int test_a64_instr_b_cond(int a, int b);
+int test_a64_instr_bl(int a, int b);
 int test_a64_instr_cbz(int a, int b);
 int test_a64_instr_tbz(int a, int b);
 

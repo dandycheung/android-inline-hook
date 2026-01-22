@@ -281,7 +281,6 @@ GLOBL_DEF(t16_cbnz_t1)
 GLOBL_DEF(t16_cbnz_t1_fixaddr)
 GLOBL_DEF(t16_it_t1_case1)
 GLOBL_DEF(t16_it_t1_case2)
-GLOBL_DEF(t16_it_t1_case3)
 GLOBL_DEF(t16_instr)
 
 GLOBL_DEF(t32_b_t3)
@@ -356,6 +355,7 @@ GLOBL_DEF(a64_tbnz)
 GLOBL_DEF(a64_tbnz_fixaddr)
 GLOBL_DEF(a64_instr_b)
 GLOBL_DEF(a64_instr_b_cond)
+GLOBL_DEF(a64_instr_bl)
 GLOBL_DEF(a64_instr_cbz)
 GLOBL_DEF(a64_instr_tbz)
 
@@ -554,6 +554,12 @@ static int intercept_instr(void) {
       unittest_interceptor_flags | SHADOWHOOK_INTERCEPT_RECORD, "libunittest.so", "test_a64_instr_b_cond+8");
   if (NULL == stub_intercept_a64_instr_b_cond) return -1;
 
+  if (NULL != stub_intercept_a64_instr_bl) return -1;
+  stub_intercept_a64_instr_bl = shadowhook_intercept_instr_addr(
+      (void *)((uintptr_t)test_a64_instr_bl + 8), interceptor_a64_instr_bl, NULL,
+      unittest_interceptor_flags | SHADOWHOOK_INTERCEPT_RECORD, "libunittest.so", "test_a64_instr_bl+8");
+  if (NULL == stub_intercept_a64_instr_bl) return -1;
+
   if (NULL != stub_intercept_a64_instr_cbz) return -1;
   stub_intercept_a64_instr_cbz = shadowhook_intercept_instr_addr(
       (void *)((uintptr_t)test_a64_instr_cbz + 8), interceptor_a64_instr_cbz, NULL,
@@ -604,7 +610,6 @@ static int unittest_hook(int api_level) {
   HOOK(t16_cbnz_t1_fixaddr);
   HOOK(t16_it_t1_case1);
   HOOK(t16_it_t1_case2);
-  HOOK(t16_it_t1_case3);
   HOOK(t32_b_t3);
   HOOK(t32_b_t4);
   HOOK(t32_b_t4_fixaddr);
@@ -751,7 +756,6 @@ int unittest_unhook(void) {
   UNHOOK(t16_cbnz_t1_fixaddr);
   UNHOOK(t16_it_t1_case1);
   UNHOOK(t16_it_t1_case2);
-  UNHOOK(t16_it_t1_case3);
   UNHOOK(t32_b_t3);
   UNHOOK(t32_b_t4);
   UNHOOK(t32_b_t4_fixaddr);
@@ -867,7 +871,6 @@ static int unittest_intercept(void) {
   INTERCEPT(t16_cbnz_t1_fixaddr);
   INTERCEPT(t16_it_t1_case1);
   INTERCEPT(t16_it_t1_case2);
-  INTERCEPT(t16_it_t1_case3);
   INTERCEPT(t32_b_t3);
   INTERCEPT(t32_b_t4);
   INTERCEPT(t32_b_t4_fixaddr);
@@ -1032,7 +1035,6 @@ int unittest_unintercept(void) {
   UNINTERCEPT(t16_cbnz_t1_fixaddr);
   UNINTERCEPT(t16_it_t1_case1);
   UNINTERCEPT(t16_it_t1_case2);
-  UNINTERCEPT(t16_it_t1_case3);
   UNINTERCEPT(t32_b_t3);
   UNINTERCEPT(t32_b_t4);
   UNINTERCEPT(t32_b_t4_fixaddr);
@@ -1102,6 +1104,7 @@ int unittest_unintercept(void) {
   UNINTERCEPT(a64_tbnz_fixaddr);
   UNINTERCEPT(a64_instr_b);
   UNINTERCEPT(a64_instr_b_cond);
+  UNINTERCEPT(a64_instr_bl);
   UNINTERCEPT(a64_instr_cbz);
   UNINTERCEPT(a64_instr_tbz);
 #endif
@@ -1153,7 +1156,6 @@ int unittest_run(bool hookee2_loaded) {
   RUN(t16_cbnz_t1_fixaddr);
   RUN(t16_it_t1_case1);
   RUN(t16_it_t1_case2);
-  RUN(t16_it_t1_case3);
 
   LOG(DELIMITER, "TEST INST T32");
   RUN(t32_b_t3);
@@ -1239,6 +1241,7 @@ int unittest_run(bool hookee2_loaded) {
   LOG("NOTE: When testing hook-without-island on arm64, errors may occur. This is expected.");
   RUN(a64_instr_b);
   RUN(a64_instr_b_cond);
+  RUN(a64_instr_bl);
   RUN(a64_instr_cbz);
   RUN(a64_instr_tbz);
 #endif

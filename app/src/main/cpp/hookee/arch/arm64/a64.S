@@ -401,6 +401,20 @@ ENTRY_GLOBAL_ARM(test_a64_instr_b_cond)
     ret
 END(test_a64_instr_b_cond)
 
+// instr BL
+ENTRY_GLOBAL_ARM(test_a64_instr_bl)
+    stp      x29, x30, [sp, #-0x10]!
+    mov      x17, #123
+    bl       .L_a64_instr_bl_next
+    ldp      x29, x30, [sp], #0x10
+    ret
+.L_a64_instr_bl_next:
+    cmp      x17, #123
+    b.ne     #8
+    add      x0, x0, x1
+    ret
+END(test_a64_bl_fixaddr)
+
 // instr CBZ
 ENTRY_GLOBAL_ARM(test_a64_instr_cbz)
     nop

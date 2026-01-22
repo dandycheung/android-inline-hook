@@ -36,16 +36,17 @@
 #pragma clang diagnostic ignored "-Wsign-conversion"
 #pragma clang diagnostic ignored "-Wpacked"
 #pragma clang diagnostic ignored "-Wshorten-64-to-32"
-// #pragma clang diagnostic ignored "-Wreserved-identifier"
 #pragma clang diagnostic ignored "-Wpadded"
 #include "linux_syscall_support.h"
 #pragma clang diagnostic pop
 
-#define SH_SAFE_IDX_PTHREAD_GETSPECIFIC 0
-#define SH_SAFE_IDX_PTHREAD_SETSPECIFIC 1
-#define SH_SAFE_IDX_ABORT               2
+#define SH_SAFE_IDX_PTHREAD_GETSPECIFIC  0
+#define SH_SAFE_IDX_PTHREAD_SETSPECIFIC  1
+#define SH_SAFE_IDX_PTHREAD_MUTEX_LOCK   2
+#define SH_SAFE_IDX_PTHREAD_MUTEX_UNLOCK 3
+#define SH_SAFE_IDX_ABORT                4
 
-#define SH_SAFE_IDX_SZ 3
+#define SH_SAFE_IDX_SZ 5
 typedef struct {
   uintptr_t target_addr;
   uintptr_t orig_addr;
@@ -72,6 +73,11 @@ int sh_safe_init(void) {
     goto end;
   if (__predict_false(0 != sh_safe_init_func(handle, "pthread_setspecific", SH_SAFE_IDX_PTHREAD_SETSPECIFIC)))
     goto end;
+  if (__predict_false(0 != sh_safe_init_func(handle, "pthread_mutex_lock", SH_SAFE_IDX_PTHREAD_MUTEX_LOCK)))
+    goto end;
+  if (__predict_false(0 !=
+                      sh_safe_init_func(handle, "pthread_mutex_unlock", SH_SAFE_IDX_PTHREAD_MUTEX_UNLOCK)))
+    goto end;
   if (__predict_false(0 != sh_safe_init_func(handle, "abort", SH_SAFE_IDX_ABORT))) goto end;
   r = 0;
 
@@ -83,7 +89,7 @@ end:
 void sh_safe_set_orig_addr(uintptr_t target_addr, uintptr_t orig_addr) {
   for (size_t i = 0; i < SH_SAFE_IDX_SZ; i++) {
     if (__predict_false(sh_safe_addrs[i].target_addr == target_addr)) {
-      __atomic_store_n(&sh_safe_addrs[i].orig_addr, orig_addr, __ATOMIC_SEQ_CST);
+      __atomic_store_n(&sh_safe_addrs[i].orig_addr, orig_addr, __ATOMIC_RELEASE);
       break;
     }
   }
@@ -91,7 +97,7 @@ void sh_safe_set_orig_addr(uintptr_t target_addr, uintptr_t orig_addr) {
 
 static uintptr_t sh_safe_get_orig_addr(size_t idx) {
   sh_safe_addr_t *addr = &sh_safe_addrs[idx];
-  uintptr_t orig_addr = __atomic_load_n(&addr->orig_addr, __ATOMIC_SEQ_CST);
+  uintptr_t orig_addr = __atomic_load_n(&addr->orig_addr, __ATOMIC_ACQUIRE);
   return 0 != orig_addr ? orig_addr : addr->target_addr;
 }
 
@@ -120,6 +126,16 @@ __attribute__((always_inline)) int sh_safe_pthread_setspecific(pthread_key_t key
 #pragma clang diagnostic pop
     return 0;
   }
+}
+
+__attribute__((always_inline)) int sh_safe_pthread_mutex_lock(pthread_mutex_t *mutex) {
+  uintptr_t addr = sh_safe_get_orig_addr(SH_SAFE_IDX_PTHREAD_MUTEX_LOCK);
+  return ((int (*)(pthread_mutex_t *))addr)(mutex);
+}
+
+__attribute__((always_inline)) int sh_safe_pthread_mutex_unlock(pthread_mutex_t *mutex) {
+  uintptr_t addr = sh_safe_get_orig_addr(SH_SAFE_IDX_PTHREAD_MUTEX_UNLOCK);
+  return ((int (*)(pthread_mutex_t *))addr)(mutex);
 }
 
 __attribute__((always_inline)) void sh_safe_abort(void) {

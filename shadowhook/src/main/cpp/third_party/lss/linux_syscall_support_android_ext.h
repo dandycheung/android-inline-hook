@@ -19,18 +19,28 @@
 // SOFTWARE.
 //
 
-// Created by Kelun Cai (caikelun@bytedance.com) on 2024-12-30.
+// Created by Kelun Cai (caikelun@bytedance.com) on 2025-12-02.
 
-#pragma once
-#include <stddef.h>
-#include <stdint.h>
+#ifndef SYS_LINUX_SYSCALL_SUPPORT_EXT_H
+#define SYS_LINUX_SYSCALL_SUPPORT_EXT_H
 
-#include "sh_linker.h"
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wreserved-id-macro"
+#pragma clang diagnostic ignored "-Wvariadic-macros"
+#pragma clang diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
+#pragma clang diagnostic ignored "-Wsign-conversion"
+#pragma clang diagnostic ignored "-Wpacked"
+#pragma clang diagnostic ignored "-Wshorten-64-to-32"
+#pragma clang diagnostic ignored "-Wpadded"
+#include "linux_syscall_support.h"
 
-// arm:   size = 8
-// arm64: size = 8 or 16 or 20
-uintptr_t sh_elf_alloc(size_t size, uintptr_t range_low, uintptr_t range_high, uintptr_t pc,
-                       sh_addr_info_t *addr_info);
-void sh_elf_free(uintptr_t addr, size_t size, uintptr_t load_bias);
+#if defined(__aarch64__) || defined(__arm__)
 
-void sh_elf_cleanup_after_dlclose(uintptr_t load_bias);
+#include <sys/sysinfo.h>
+LSS_INLINE _syscall1(int, sysinfo, struct sysinfo *, i)
+
+#endif
+
+#pragma clang diagnostic pop
+
+#endif

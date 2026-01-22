@@ -43,7 +43,7 @@ int sh_inst_hook(sh_inst_t *self, uintptr_t target_addr, sh_addr_info_t *addr_in
                  bool is_to_interceptor, sh_inst_set_orig_addr_t set_orig_addr, void *set_orig_addr_arg);
 int sh_inst_rehook(sh_inst_t *self, uintptr_t target_addr, sh_addr_info_t *addr_info, uintptr_t new_addr,
                    bool is_to_interceptor);
-int sh_inst_unhook(sh_inst_t *self, uintptr_t target_addr);
+int sh_inst_unhook(sh_inst_t *self, uintptr_t target_addr, uintptr_t load_bias);
 
 void sh_inst_free_after_dlclose(sh_inst_t *self, uintptr_t target_addr);
 

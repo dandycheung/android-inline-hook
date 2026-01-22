@@ -170,7 +170,7 @@ static size_t sh_a64_rewrite_b(uint32_t *buf, uint32_t inst, uintptr_t pc, sh_a6
   uint64_t addr = pc + imm64;
   addr = sh_a64_fix_addr(addr, rinfo);
 
-  bool use_branch_island = (0 != rinfo->island_rewrite && (type == B || type == B_COND));
+  bool use_branch_island = (0 != rinfo->island_rewrite);
   if (use_branch_island) {
     if (0 != sh_a64_build_island_rewrite(addr, rinfo)) return 0;  // failed
     addr = rinfo->island_rewrite->addr;

@@ -35,7 +35,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define SHADOWHOOK_VERSION "2.0.0"
+#define SHADOWHOOK_VERSION "2.0.1-rc.10"
 
 #define SHADOWHOOK_ERRNO_OK                     0
 #define SHADOWHOOK_ERRNO_PENDING                1
@@ -53,7 +53,7 @@
 #define SHADOWHOOK_ERRNO_INIT_HUB               13
 #define SHADOWHOOK_ERRNO_HUB_CREAT              14
 #define SHADOWHOOK_ERRNO_MONITOR_DLOPEN         15
-#define SHADOWHOOK_ERRNO_HOOK_HUB_DUP           16
+#define SHADOWHOOK_ERRNO_HOOK_UNIQUE_DUP        16
 #define SHADOWHOOK_ERRNO_HOOK_DLOPEN_CRASH      17
 #define SHADOWHOOK_ERRNO_HOOK_DLSYM             18
 #define SHADOWHOOK_ERRNO_HOOK_DLSYM_CRASH       19

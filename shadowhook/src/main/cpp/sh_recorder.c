@@ -221,7 +221,7 @@ static const char *sh_recorder_get_base_name(const char *lib_name) {
 }
 
 static void sh_recorder_get_base_name_by_addr(uintptr_t addr, char *base_name, size_t base_name_sz) {
-#define dlcache_timeout 10
+#define dlcache_timeout 60
   static time_t dlcache_ts = 0;
   static void *dlcache = NULL;
   static pthread_mutex_t dlcache_lock = PTHREAD_MUTEX_INITIALIZER;

@@ -331,8 +331,7 @@ int shadowhook_unhook(void *stub) {
   if (__predict_false(SHADOWHOOK_ERRNO_OK != shadowhook_init_errno)) GOTO_ERR(shadowhook_init_errno);
 
   sh_task_t *task = (sh_task_t *)stub;
-  r = sh_task_undo(task, (uintptr_t)caller_addr);
-  sh_task_destroy(task);
+  r = sh_task_undo_and_destroy(task, (uintptr_t)caller_addr);
   if (0 != r) GOTO_ERR(r);
 
   // OK
@@ -497,8 +496,7 @@ int shadowhook_unintercept(void *stub) {
   if (__predict_false(SHADOWHOOK_ERRNO_OK != shadowhook_init_errno)) GOTO_ERR(shadowhook_init_errno);
 
   sh_task_t *task = (sh_task_t *)stub;
-  r = sh_task_undo(task, (uintptr_t)caller_addr);
-  sh_task_destroy(task);
+  r = sh_task_undo_and_destroy(task, (uintptr_t)caller_addr);
   if (0 != r) GOTO_ERR(r);
 
   // OK
@@ -519,11 +517,8 @@ void shadowhook_dump_records(int fd, uint32_t item_flags) {
 }
 
 void *shadowhook_dlopen(const char *lib_name) {
-  if (__predict_false(shadowhook_disable)) return NULL;
-  if (__predict_false(SHADOWHOOK_ERRNO_OK != shadowhook_init_errno)) return NULL;
-
   void *handle = NULL;
-  if (sh_util_get_api_level() >= __ANDROID_API_L__) {
+  if (SHADOWHOOK_ERRNO_OK != shadowhook_init_errno || sh_util_get_api_level() >= __ANDROID_API_L__) {
     handle = xdl_open(lib_name, XDL_DEFAULT);
   } else {
     SH_SIG_TRY(SIGSEGV, SIGBUS) {
@@ -538,48 +533,44 @@ void *shadowhook_dlopen(const char *lib_name) {
 }
 
 void shadowhook_dlclose(void *handle) {
-  if (__predict_false(shadowhook_disable)) return;
-  if (__predict_false(SHADOWHOOK_ERRNO_OK != shadowhook_init_errno)) return;
-
   xdl_close(handle);
 }
 
 void *shadowhook_dlsym(void *handle, const char *sym_name) {
-  if (__predict_false(shadowhook_disable)) return NULL;
-  if (__predict_false(SHADOWHOOK_ERRNO_OK != shadowhook_init_errno)) return NULL;
-
   void *addr = shadowhook_dlsym_dynsym(handle, sym_name);
   if (NULL == addr) addr = shadowhook_dlsym_symtab(handle, sym_name);
   return addr;
 }
 
 void *shadowhook_dlsym_dynsym(void *handle, const char *sym_name) {
-  if (__predict_false(shadowhook_disable)) return NULL;
-  if (__predict_false(SHADOWHOOK_ERRNO_OK != shadowhook_init_errno)) return NULL;
-
   void *addr = NULL;
-  SH_SIG_TRY(SIGSEGV, SIGBUS) {
+  if (SHADOWHOOK_ERRNO_OK != shadowhook_init_errno) {
     addr = xdl_sym(handle, sym_name, NULL);
+  } else {
+    SH_SIG_TRY(SIGSEGV, SIGBUS) {
+      addr = xdl_sym(handle, sym_name, NULL);
+    }
+    SH_SIG_CATCH() {
+      SH_LOG_WARN("shadowhook: dlsym_dynsym crashed - %p, %s", handle, sym_name);
+    }
+    SH_SIG_EXIT
   }
-  SH_SIG_CATCH() {
-    SH_LOG_WARN("shadowhook: dlsym_dynsym crashed - %p, %s", handle, sym_name);
-  }
-  SH_SIG_EXIT
   return addr;
 }
 
 void *shadowhook_dlsym_symtab(void *handle, const char *sym_name) {
-  if (__predict_false(shadowhook_disable)) return NULL;
-  if (__predict_false(SHADOWHOOK_ERRNO_OK != shadowhook_init_errno)) return NULL;
-
   void *addr = NULL;
-  SH_SIG_TRY(SIGSEGV, SIGBUS) {
+  if (SHADOWHOOK_ERRNO_OK != shadowhook_init_errno) {
     addr = xdl_dsym(handle, sym_name, NULL);
+  } else {
+    SH_SIG_TRY(SIGSEGV, SIGBUS) {
+      addr = xdl_dsym(handle, sym_name, NULL);
+    }
+    SH_SIG_CATCH() {
+      SH_LOG_WARN("shadowhook: dlsym_symtab crashed - %p, %s", handle, sym_name);
+    }
+    SH_SIG_EXIT
   }
-  SH_SIG_CATCH() {
-    SH_LOG_WARN("shadowhook: dlsym_symtab crashed - %p, %s", handle, sym_name);
-  }
-  SH_SIG_EXIT
   return addr;
 }
 
@@ -587,7 +578,7 @@ int shadowhook_register_dl_init_callback(shadowhook_dl_info_t pre, shadowhook_dl
   if (__predict_false(shadowhook_disable)) SH_ERRNO_SET_RET_FAIL(SHADOWHOOK_ERRNO_DISABLED);
   if (__predict_false(SHADOWHOOK_ERRNO_OK != shadowhook_init_errno))
     SH_ERRNO_SET_RET_FAIL(shadowhook_init_errno);
-#if SH_UTIL_COMPATIBLE_WITH_ARM_ANDROID_4_X
+#ifdef SH_CONFIG_COMPATIBLE_WITH_ARM_ANDROID_4_X
   if (__predict_false(sh_util_get_api_level() < __ANDROID_API_L__))
     SH_ERRNO_SET_RET_FAIL(SHADOWHOOK_ERRNO_NOT_SUPPORT);
 #endif
@@ -602,7 +593,7 @@ int shadowhook_unregister_dl_init_callback(shadowhook_dl_info_t pre, shadowhook_
   if (__predict_false(shadowhook_disable)) SH_ERRNO_SET_RET_FAIL(SHADOWHOOK_ERRNO_DISABLED);
   if (__predict_false(SHADOWHOOK_ERRNO_OK != shadowhook_init_errno))
     SH_ERRNO_SET_RET_FAIL(shadowhook_init_errno);
-#if SH_UTIL_COMPATIBLE_WITH_ARM_ANDROID_4_X
+#ifdef SH_CONFIG_COMPATIBLE_WITH_ARM_ANDROID_4_X
   if (__predict_false(sh_util_get_api_level() < __ANDROID_API_L__))
     SH_ERRNO_SET_RET_FAIL(SHADOWHOOK_ERRNO_NOT_SUPPORT);
 #endif
@@ -617,7 +608,7 @@ int shadowhook_register_dl_fini_callback(shadowhook_dl_info_t pre, shadowhook_dl
   if (__predict_false(shadowhook_disable)) SH_ERRNO_SET_RET_FAIL(SHADOWHOOK_ERRNO_DISABLED);
   if (__predict_false(SHADOWHOOK_ERRNO_OK != shadowhook_init_errno))
     SH_ERRNO_SET_RET_FAIL(shadowhook_init_errno);
-#if SH_UTIL_COMPATIBLE_WITH_ARM_ANDROID_4_X
+#ifdef SH_CONFIG_COMPATIBLE_WITH_ARM_ANDROID_4_X
   if (__predict_false(sh_util_get_api_level() < __ANDROID_API_L__))
     SH_ERRNO_SET_RET_FAIL(SHADOWHOOK_ERRNO_NOT_SUPPORT);
 #endif
@@ -632,7 +623,7 @@ int shadowhook_unregister_dl_fini_callback(shadowhook_dl_info_t pre, shadowhook_
   if (__predict_false(shadowhook_disable)) SH_ERRNO_SET_RET_FAIL(SHADOWHOOK_ERRNO_DISABLED);
   if (__predict_false(SHADOWHOOK_ERRNO_OK != shadowhook_init_errno))
     SH_ERRNO_SET_RET_FAIL(shadowhook_init_errno);
-#if SH_UTIL_COMPATIBLE_WITH_ARM_ANDROID_4_X
+#ifdef SH_CONFIG_COMPATIBLE_WITH_ARM_ANDROID_4_X
   if (__predict_false(sh_util_get_api_level() < __ANDROID_API_L__))
     SH_ERRNO_SET_RET_FAIL(SHADOWHOOK_ERRNO_NOT_SUPPORT);
 #endif

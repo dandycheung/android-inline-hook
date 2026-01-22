@@ -56,6 +56,7 @@ static int sh_inst_rewrite(sh_inst_t *self, uintptr_t target_addr, sh_addr_info_
   for (uintptr_t i = 0; i < self->backup_len; i += 4)
     rinfo.inst_lens[i / 4] = sh_a64_get_rewrite_inst_len(*((uint32_t *)(target_addr + i)));
   rinfo.island_rewrite = (4 == self->backup_len && !addr_info->is_proc_start) ? &self->island_rewrite : NULL;
+  rinfo.addr_info = addr_info;
 
   if (!addr_info->is_proc_start) {
     rinfo.buf_offset += sh_a64_restore_ip((uint32_t *)self->enter);
@@ -136,8 +137,9 @@ static int sh_inst_rewrite_with_island(sh_inst_t *self, uintptr_t target_addr, s
   int r;
   if (0 != (r = sh_inst_safe_rewrite(self, target_addr, addr_info, resume_addr, set_orig_addr,
                                      set_orig_addr_arg))) {
-    if (0 != self->island_enter.addr) sh_island_free(&self->island_enter);
-    if (0 != self->island_rewrite.addr) sh_island_free(&self->island_rewrite);
+    if (0 != self->island_enter.addr) sh_island_free(&self->island_enter, (uintptr_t)addr_info->dli_fbase);
+    if (0 != self->island_rewrite.addr)
+      sh_island_free(&self->island_rewrite, (uintptr_t)addr_info->dli_fbase);
   }
   return r;
 }
@@ -169,12 +171,12 @@ static int sh_inst_reloc_with_island(sh_inst_t *self, uintptr_t target_addr, sh_
   // relative jump to the island-exit by overwriting the head of original function
   sh_a64_relative_jump(new_exit, new_island_exit.addr, pc);
   if (0 != (r = sh_util_write_inst(target_addr, new_exit, self->backup_len))) {
-    sh_island_free(&new_island_exit);
+    sh_island_free(&new_island_exit, (uintptr_t)addr_info->dli_fbase);
     return r;
   }
 
   // OK
-  if (0 != self->island_exit.addr) sh_island_free(&self->island_exit);
+  if (0 != self->island_exit.addr) sh_island_free(&self->island_exit, (uintptr_t)addr_info->dli_fbase);
   self->island_exit = new_island_exit;
   memcpy(self->exit, new_exit, self->backup_len);
 
@@ -200,8 +202,9 @@ static int sh_inst_hook_with_island(sh_inst_t *self, uintptr_t target_addr, sh_a
     return r;
   if (0 !=
       (r = sh_inst_reloc_with_island(self, target_addr, addr_info, new_addr, is_to_interceptor, false))) {
-    if (0 != self->island_enter.addr) sh_island_free(&self->island_enter);
-    if (0 != self->island_rewrite.addr) sh_island_free(&self->island_rewrite);
+    if (0 != self->island_enter.addr) sh_island_free(&self->island_enter, (uintptr_t)addr_info->dli_fbase);
+    if (0 != self->island_rewrite.addr)
+      sh_island_free(&self->island_rewrite, (uintptr_t)addr_info->dli_fbase);
     return r;
   }
   return 0;
@@ -298,8 +301,8 @@ int sh_inst_hook(sh_inst_t *self, uintptr_t target_addr, sh_addr_info_t *addr_in
 
 #ifdef SH_CONFIG_TRY_HOOK_WITHOUT_ISLAND
   if (NULL == addr_info->dli_saddr && addr_info->is_sym_addr) {
-    if (0 != (r = sh_linker_get_addr_info_by_addr((void *)target_addr, addr_info->is_sym_addr,
-                                                  addr_info->is_proc_start, addr_info, false, NULL, 0)))
+    if (0 != (r = sh_linker_get_addr_info_by_addr(addr_info, (void *)target_addr, addr_info->is_sym_addr,
+                                                  addr_info->is_proc_start, false)))
       goto err;
   }
   if (0 == (r = sh_inst_hook_without_island(self, target_addr, addr_info, new_addr, is_to_interceptor,
@@ -332,7 +335,7 @@ int sh_inst_rehook(sh_inst_t *self, uintptr_t target_addr, sh_addr_info_t *addr_
   }
 }
 
-int sh_inst_unhook(sh_inst_t *self, uintptr_t target_addr) {
+int sh_inst_unhook(sh_inst_t *self, uintptr_t target_addr, uintptr_t load_bias) {
   int r;
 
   // restore the instructions at the target address
@@ -348,9 +351,9 @@ int sh_inst_unhook(sh_inst_t *self, uintptr_t target_addr) {
   __atomic_thread_fence(__ATOMIC_SEQ_CST);
 
   // free memory space for island-exit and island-enter
-  if (0 != self->island_exit.addr) sh_island_free(&self->island_exit);
-  if (0 != self->island_enter.addr) sh_island_free(&self->island_enter);
-  if (0 != self->island_rewrite.addr) sh_island_free(&self->island_rewrite);
+  if (0 != self->island_exit.addr) sh_island_free(&self->island_exit, load_bias);
+  if (0 != self->island_enter.addr) sh_island_free(&self->island_enter, load_bias);
+  if (0 != self->island_rewrite.addr) sh_island_free(&self->island_rewrite, load_bias);
 
   // free memory space for enter
   sh_enter_free(self->enter);

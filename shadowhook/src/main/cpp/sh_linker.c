@@ -29,6 +29,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/system_properties.h>
 
 #include "queue.h"
 #include "sh_log.h"
@@ -41,11 +42,13 @@
 
 #ifndef __LP64__
 #define SH_LINKER_BASENAME           "linker"
-#define SH_LINKER_SIZEOF_DLINFO      32
+#define SH_LINKER_ABI_STR            "armeabi-v7a"
+#define SH_LINKER_SIZEOF_DLINFO      16
 #define SH_LINKER_HOOK_WITH_DL_MUTEX 1
 #else
 #define SH_LINKER_BASENAME           "linker64"
-#define SH_LINKER_SIZEOF_DLINFO      16
+#define SH_LINKER_ABI_STR            "arm64-v8a"
+#define SH_LINKER_SIZEOF_DLINFO      32
 #define SH_LINKER_HOOK_WITH_DL_MUTEX 0
 #endif
 
@@ -84,7 +87,7 @@ static pthread_rwlock_t sh_linker_dl_init_cbs_lock = PTHREAD_RWLOCK_INITIALIZER;
 static sh_linker_dl_info_cb_queue_t sh_linker_dl_fini_cbs = TAILQ_HEAD_INITIALIZER(sh_linker_dl_fini_cbs);
 static pthread_rwlock_t sh_linker_dl_fini_cbs_lock = PTHREAD_RWLOCK_INITIALIZER;
 
-#if SH_UTIL_COMPATIBLE_WITH_ARM_ANDROID_4_X
+#ifdef SH_CONFIG_COMPATIBLE_WITH_ARM_ANDROID_4_X
 
 // == Android 4.x. for dlopen() interceptor and post-callback
 static bool sh_linker_dlopen_hook_tried = false;
@@ -109,7 +112,7 @@ __attribute__((constructor)) static void sh_linker_ctor(void) {
 #endif
 
 static const char *sh_linker_match_dlfcn(uintptr_t target_addr) {
-#if SH_UTIL_COMPATIBLE_WITH_ARM_ANDROID_4_X
+#ifdef SH_CONFIG_COMPATIBLE_WITH_ARM_ANDROID_4_X
   if (__predict_false(sh_util_get_api_level() < __ANDROID_API_L__))
     for (size_t i = 0; i < sizeof(sh_linker_dlfcn) / sizeof(sh_linker_dlfcn[0]); i++)
       if (~sh_linker_dlfcn[i] == target_addr) return sh_linker_dlfcn_name[i];
@@ -119,18 +122,6 @@ static const char *sh_linker_match_dlfcn(uintptr_t target_addr) {
 
   return NULL;
 }
-
-#if SH_UTIL_COMPATIBLE_WITH_ARM_ANDROID_4_X
-bool sh_linker_need_to_pre_register(uintptr_t target_addr) {
-  if (__predict_false(sh_util_get_api_level() < __ANDROID_API_L__)) {
-    if (sh_linker_dlopen_hook_tried) return false;
-    if (target_addr == ~sh_linker_dlfcn[0]) return true;
-    return false;
-  } else {
-    return false;
-  }
-}
-#endif
 
 static void *sh_linker_get_base_addr(xdl_info_t *dlinfo) {
   uintptr_t vaddr_min = UINTPTR_MAX;
@@ -163,7 +154,7 @@ static bool sh_linker_check_arch(xdl_info_t *dlinfo) {
   return true;
 }
 
-#if SH_UTIL_COMPATIBLE_WITH_ARM_ANDROID_4_X
+#ifdef SH_CONFIG_COMPATIBLE_WITH_ARM_ANDROID_4_X
 
 typedef void *(*sh_linker_proxy_dlopen_t)(const char *, int);
 static sh_linker_proxy_dlopen_t sh_linker_orig_dlopen;
@@ -199,6 +190,7 @@ int sh_linker_register_dlopen_post_callback(sh_linker_dlopen_post_t post) {
 
   sh_addr_info_t addr_info;
   addr_info.dli_fbase = dlinfo.dli_fbase;
+  addr_info.dli_fname = SH_LINKER_BASENAME;
   addr_info.dlpi_phdr = dlinfo.dlpi_phdr;
   addr_info.dlpi_phnum = dlinfo.dlpi_phnum;
   addr_info.is_sym_addr = true;
@@ -311,6 +303,14 @@ static int sh_linker_soinfo_memory_scan_pre(void *soinfo) {
       bool l_name_matched = false;
       SH_SIG_TRY(SIGSEGV, SIGBUS) {
         l_name_matched = sh_util_ends_with((const char *)val_1, SH_LINKER_SHADOWHOOK_NOTHING_BASE_NAME);
+#if __ANDROID_API__ <= __ANDROID_API_M__
+        if (!l_name_matched && sh_util_get_api_level() == __ANDROID_API_M__) {
+          if (sh_util_ends_with((const char *)val_1, ".apk") &&
+              sh_util_starts_with(dlinfo.dli_fname, (const char *)val_1)) {
+            l_name_matched = true;
+          }
+        }
+#endif
       }
       SH_SIG_CATCH() {
         l_name_matched = false;
@@ -366,11 +366,52 @@ static void sh_linker_soinfo_memory_scan_post(void *soinfo) {
   }
 }
 
-static void sh_linker_soinfo_to_dlinfo(void *soinfo, struct dl_phdr_info *dlinfo) {
+static void sh_linker_soinfo_to_dlinfo(void *soinfo, struct dl_phdr_info *dlinfo, char *fixed_name,
+                                       size_t fixed_name_len) {
   dlinfo->dlpi_addr = *((ElfW(Addr) *)((uintptr_t)soinfo + sh_linker_soinfo_offset_load_bias));
   dlinfo->dlpi_name = *((const char **)((uintptr_t)soinfo + sh_linker_soinfo_offset_name));
   dlinfo->dlpi_phdr = *((const ElfW(Phdr) **)((uintptr_t)soinfo + sh_linker_soinfo_offset_phdr));
   dlinfo->dlpi_phnum = (ElfW(Half))(*((size_t *)((uintptr_t)soinfo + sh_linker_soinfo_offset_phnum)));
+
+#if __ANDROID_API__ <= __ANDROID_API_M__
+  if (sh_util_get_api_level() == __ANDROID_API_M__ && NULL != fixed_name &&
+      sh_util_ends_with(dlinfo->dlpi_name, ".apk")) {
+    // find .dynamic
+    ElfW(Dyn) *dynamic = NULL;
+    for (size_t i = 0; i < dlinfo->dlpi_phnum; i++) {
+      const ElfW(Phdr) *phdr = &(dlinfo->dlpi_phdr[i]);
+      if (PT_DYNAMIC == phdr->p_type) {
+        dynamic = (ElfW(Dyn) *)(dlinfo->dlpi_addr + phdr->p_vaddr);
+        break;
+      }
+    }
+
+    // add '!/lib/<ABI>/<lib_name>' suffix
+    if (NULL != dynamic) {
+      const char *dynstr = NULL;
+      ssize_t soname_off = -1;
+      for (ElfW(Dyn) *entry = dynamic; entry && entry->d_tag != DT_NULL; entry++) {
+        switch (entry->d_tag) {
+          case DT_STRTAB:
+            dynstr = (const char *)(dlinfo->dlpi_addr + entry->d_un.d_ptr);
+            break;
+          case DT_SONAME:
+            soname_off = (ssize_t)entry->d_un.d_val;
+            break;
+          default:
+            break;
+        }
+      }
+      if (NULL != dynstr && soname_off >= 0) {
+        snprintf(fixed_name, fixed_name_len, "%s!/lib/" SH_LINKER_ABI_STR "/%s", dlinfo->dlpi_name,
+                 dynstr + (size_t)soname_off);
+        dlinfo->dlpi_name = fixed_name;
+      }
+    }
+  }
+#else
+  (void)fixed_name, (void)fixed_name_len;
+#endif
 }
 
 static bool sh_linker_soinfo_is_loading(void *soinfo) {
@@ -385,13 +426,20 @@ void shadowhook_proxy_android_linker_soinfo_call_constructors(void *soinfo) {
   bool do_callbacks = false;
   bool do_memory_scan_pre_ok = false;
   pid_t scan_tid = __atomic_load_n(&sh_linker_soinfo_offset_scan_tid, __ATOMIC_ACQUIRE);
+#if __ANDROID_API__ <= __ANDROID_API_M__
+  char buf[1024];
+#endif
 
   if (__predict_true(0 == scan_tid)) {
     if (__predict_true(__atomic_load_n(&sh_linker_soinfo_offset_scan_ok, __ATOMIC_RELAXED))) {
       if (sh_linker_soinfo_is_loading(soinfo) && !TAILQ_EMPTY(&sh_linker_dl_init_cbs)) {
         // do pre-callbacks
         do_callbacks = true;
-        sh_linker_soinfo_to_dlinfo(soinfo, &dlinfo);
+#if __ANDROID_API__ <= __ANDROID_API_M__
+        sh_linker_soinfo_to_dlinfo(soinfo, &dlinfo, buf, sizeof(buf));
+#else
+        sh_linker_soinfo_to_dlinfo(soinfo, &dlinfo, NULL, 0);
+#endif
 
         SH_LOG_INFO("linker: call_ctors pre, load_bias %" PRIxPTR ", name %s", (uintptr_t)dlinfo.dlpi_addr,
                     dlinfo.dlpi_name);
@@ -434,11 +482,18 @@ void shadowhook_proxy_android_linker_soinfo_call_destructors(void *soinfo) {
   sh_linker_dl_info_cb_t *cb;
   struct dl_phdr_info dlinfo;
   bool do_callbacks = false;
+#if __ANDROID_API__ <= __ANDROID_API_M__
+  char buf[1024];
+#endif
 
   if (__predict_true(0 == __atomic_load_n(&sh_linker_soinfo_offset_scan_tid, __ATOMIC_ACQUIRE))) {
     if (__predict_true(__atomic_load_n(&sh_linker_soinfo_offset_scan_ok, __ATOMIC_RELAXED))) {
       if (!TAILQ_EMPTY(&sh_linker_dl_init_cbs)) {
-        sh_linker_soinfo_to_dlinfo(soinfo, &dlinfo);
+#if __ANDROID_API__ <= __ANDROID_API_M__
+        sh_linker_soinfo_to_dlinfo(soinfo, &dlinfo, buf, sizeof(buf));
+#else
+        sh_linker_soinfo_to_dlinfo(soinfo, &dlinfo, NULL, 0);
+#endif
 
         // The following check is used to ignore: soinfo::call_destructors() call
         // when the linker encounters an error while loading the ELF.
@@ -492,7 +547,7 @@ static int sh_linker_hook_call_ctors_dtors(sh_addr_info_t *call_ctors_addr_info,
 #endif
 
   // hook soinfo::call_constructors()
-  SH_LOG_INFO("linker: hook soinfo::call_constructors");
+  SH_LOG_INFO("linker: hook(invisible) soinfo::call_constructors");
   r_hook_ctors = sh_switch_hook_invisible((uintptr_t)call_ctors_addr_info->dli_saddr, call_ctors_addr_info,
                                           (uintptr_t)shadowhook_proxy_android_linker_soinfo_call_constructors,
                                           (uintptr_t *)&sh_linker_orig_soinfo_call_ctors, &backup_len_ctors);
@@ -504,7 +559,7 @@ static int sh_linker_hook_call_ctors_dtors(sh_addr_info_t *call_ctors_addr_info,
   }
 
   // hook soinfo::call_destructors()
-  SH_LOG_INFO("linker: hook soinfo::call_destructors");
+  SH_LOG_INFO("linker: hook(invisible) soinfo::call_destructors");
   r_hook_dtors = sh_switch_hook_invisible((uintptr_t)call_dtors_addr_info->dli_saddr, call_dtors_addr_info,
                                           (uintptr_t)shadowhook_proxy_android_linker_soinfo_call_destructors,
                                           (uintptr_t *)&sh_linker_orig_soinfo_call_dtors, &backup_len_dtors);
@@ -573,6 +628,7 @@ static int sh_linker_get_symbol_info(sh_addr_info_t *call_ctors_addr_info,
 
   // get soinfo::call_constructors()
   call_ctors_addr_info->dli_fbase = linker_dlinfo.dli_fbase;
+  call_ctors_addr_info->dli_fname = SH_LINKER_BASENAME;
   call_ctors_addr_info->dlpi_phdr = linker_dlinfo.dlpi_phdr;
   call_ctors_addr_info->dlpi_phnum = linker_dlinfo.dlpi_phnum;
   call_ctors_addr_info->is_sym_addr = true;
@@ -585,6 +641,7 @@ static int sh_linker_get_symbol_info(sh_addr_info_t *call_ctors_addr_info,
 
   // get soinfo::call_destructors()
   call_dtors_addr_info->dli_fbase = linker_dlinfo.dli_fbase;
+  call_dtors_addr_info->dli_fname = SH_LINKER_BASENAME;
   call_dtors_addr_info->dlpi_phdr = linker_dlinfo.dlpi_phdr;
   call_dtors_addr_info->dlpi_phnum = linker_dlinfo.dlpi_phnum;
   call_dtors_addr_info->is_sym_addr = true;
@@ -621,8 +678,9 @@ end:
 
 int sh_linker_init(void) {
   // only init for >= Android 5.0
-#if SH_UTIL_COMPATIBLE_WITH_ARM_ANDROID_4_X
-  if (__predict_false(sh_util_get_api_level() < __ANDROID_API_L__)) return 0;
+#ifdef SH_CONFIG_COMPATIBLE_WITH_ARM_ANDROID_4_X
+  int api_level = sh_util_get_api_level();
+  if (__predict_false(api_level < __ANDROID_API_L__)) return 0;
 #endif
 
   // get linker's soinfo::call_constructors(), soinfo::call_destructors() and g_dl_mutex
@@ -716,9 +774,9 @@ int sh_linker_unregister_dl_fini_callback(shadowhook_dl_info_t pre, shadowhook_d
   return 0;
 }
 
-int sh_linker_get_addr_info_by_addr(void *addr, bool is_sym_addr, bool is_proc_start,
-                                    sh_addr_info_t *addr_info, bool ignore_sym_info, char *fname,
-                                    size_t fname_len) {
+int sh_linker_get_addr_info_by_addr(sh_addr_info_t *addr_info, void *addr, bool is_sym_addr,
+                                    bool is_proc_start, bool ignore_sym_info) {
+  sh_linker_free_addr_info(addr_info);
   memset(addr_info, 0, sizeof(sh_addr_info_t));
 
   // dladdr()
@@ -770,6 +828,9 @@ int sh_linker_get_addr_info_by_addr(void *addr, bool is_sym_addr, bool is_proc_s
   }
 
   // OK
+  if (NULL != dlinfo.dli_fname) {
+    if (NULL == (addr_info->dli_fname = strdup(dlinfo.dli_fname))) return SHADOWHOOK_ERRNO_OOM;
+  }
   addr_info->dli_fbase = dlinfo.dli_fbase;
   addr_info->dli_saddr = dlinfo.dli_saddr;
   addr_info->dli_ssize = dlinfo.dli_ssize;
@@ -777,7 +838,6 @@ int sh_linker_get_addr_info_by_addr(void *addr, bool is_sym_addr, bool is_proc_s
   addr_info->dlpi_phnum = dlinfo.dlpi_phnum;
   addr_info->is_sym_addr = is_sym_addr;
   addr_info->is_proc_start = is_proc_start;
-  if (NULL != fname) strlcpy(fname, dlinfo.dli_fname, fname_len);
   r = 0;
 
 end:
@@ -785,12 +845,9 @@ end:
   return r;
 }
 
-int sh_linker_get_addr_info_by_sym_name(const char *lib_name, const char *sym_name,
-                                        sh_addr_info_t *addr_info) {
+int sh_linker_get_addr_info_by_name(sh_addr_info_t *addr_info, const char *lib_name, const char *sym_name) {
+  sh_linker_free_addr_info(addr_info);
   memset(addr_info, 0, sizeof(sh_addr_info_t));
-
-  xdl_info_t dlinfo;
-  memset(&dlinfo, 0, sizeof(xdl_info_t));
 
   // open library
   bool crashed = false;
@@ -810,6 +867,7 @@ int sh_linker_get_addr_info_by_sym_name(const char *lib_name, const char *sym_na
   if (NULL == handle) return SHADOWHOOK_ERRNO_PENDING;
 
   // get dlinfo
+  xdl_info_t dlinfo;
   xdl_info(handle, XDL_DI_DLINFO, (void *)&dlinfo);
 
   // check error
@@ -838,6 +896,7 @@ int sh_linker_get_addr_info_by_sym_name(const char *lib_name, const char *sym_na
   if (crashed) return SHADOWHOOK_ERRNO_HOOK_DLSYM_CRASH;
   if (NULL == sym_addr) return SHADOWHOOK_ERRNO_HOOK_DLSYM;
 
+  if (NULL == (addr_info->dli_fname = strdup(lib_name))) return SHADOWHOOK_ERRNO_OOM;
   addr_info->dli_fbase = dlinfo.dli_fbase;
   addr_info->dli_saddr = sym_addr;
   addr_info->dli_ssize = sym_size;
@@ -848,36 +907,76 @@ int sh_linker_get_addr_info_by_sym_name(const char *lib_name, const char *sym_na
   return 0;
 }
 
-static int sh_linker_get_fname_by_fbase_iterator(struct dl_phdr_info *info, size_t size, void *arg) {
-  (void)size;
+int sh_linker_get_addr_info_by_handle(sh_addr_info_t *addr_info, void **cached_handle,
+                                      struct dl_phdr_info *info, const char *sym_name) {
+  sh_linker_free_addr_info(addr_info);
+  memset(addr_info, 0, sizeof(sh_addr_info_t));
 
-  uintptr_t *pkg = (uintptr_t *)arg;
-  uintptr_t fbase = *pkg++;
-  char *fname = (char *)*pkg++;
-  size_t fname_len = (size_t)*pkg;
-
-  if (info->dlpi_addr == fbase) {
-    if (NULL != info->dlpi_name) {
-      strlcpy(fname, info->dlpi_name, fname_len);
-    }
-    return 1;  // OK
+  // open library
+  void *handle;
+  if (NULL != *cached_handle) {
+    handle = *cached_handle;
+  } else {
+    handle = xdl_open2(info);
+    if (NULL == handle) return SHADOWHOOK_ERRNO_OOM;
   }
 
-  return 0;  // continue
+  // get dlinfo
+  xdl_info_t dlinfo;
+  xdl_info(handle, XDL_DI_DLINFO, (void *)&dlinfo);
+
+  // check error
+  if (!sh_linker_check_arch(&dlinfo)) return SHADOWHOOK_ERRNO_ELF_ARCH_MISMATCH;
+
+  *cached_handle = handle;
+
+  // lookup symbol address
+  bool crashed = false;
+  void *sym_addr = NULL;
+  size_t sym_size = 0;
+  SH_SIG_TRY(SIGSEGV, SIGBUS) {
+    // do xdl_sym() or xdl_dsym() in an dlclosed-ELF will cause a crash
+    sym_addr = xdl_sym(handle, sym_name, &sym_size);
+    if (NULL == sym_addr) sym_addr = xdl_dsym(handle, sym_name, &sym_size);
+  }
+  SH_SIG_CATCH() {
+    crashed = true;
+  }
+  SH_SIG_EXIT
+  if (crashed) return SHADOWHOOK_ERRNO_HOOK_DLSYM_CRASH;
+  if (NULL == sym_addr) return SHADOWHOOK_ERRNO_HOOK_DLSYM;
+
+  if (NULL != dlinfo.dli_fname) {
+    if (NULL == (addr_info->dli_fname = strdup(dlinfo.dli_fname))) return SHADOWHOOK_ERRNO_OOM;
+  }
+  addr_info->dli_fbase = dlinfo.dli_fbase;
+  addr_info->dli_saddr = sym_addr;
+  addr_info->dli_ssize = sym_size;
+  addr_info->dlpi_phdr = dlinfo.dlpi_phdr;
+  addr_info->dlpi_phnum = dlinfo.dlpi_phnum;
+  addr_info->is_sym_addr = true;
+  addr_info->is_proc_start = true;
+  return 0;
 }
 
-void sh_linker_get_fname_by_fbase(void *fbase, char *fname, size_t fname_len) {
-  fname[0] = '\0';
-  uintptr_t pkg[3] = {(uintptr_t)fbase, (uintptr_t)fname, (uintptr_t)fname_len};
+void sh_linker_close_handle(void *cached_handle) {
+  if (NULL != cached_handle) xdl_close(cached_handle);
+}
 
-  if (sh_util_get_api_level() >= __ANDROID_API_L__) {
-    xdl_iterate_phdr(sh_linker_get_fname_by_fbase_iterator, pkg, XDL_DEFAULT);
-  } else {
-    SH_SIG_TRY(SIGSEGV, SIGBUS) {
-      xdl_iterate_phdr(sh_linker_get_fname_by_fbase_iterator, pkg, XDL_DEFAULT);
-    }
-    SH_SIG_EXIT
+void sh_linker_free_addr_info(sh_addr_info_t *addr_info) {
+  if (NULL != addr_info->dli_fname) {
+    free(addr_info->dli_fname);
+    addr_info->dli_fname = NULL;
   }
+}
+
+int sh_linker_copy_addr_info(sh_addr_info_t *addr_info, sh_addr_info_t *copy) {
+  memcpy(copy, addr_info, sizeof(sh_addr_info_t));
+  if (NULL != addr_info->dli_fname) {
+    copy->dli_fname = strdup(addr_info->dli_fname);
+    if (NULL == copy->dli_fname) return SHADOWHOOK_ERRNO_OOM;
+  }
+  return 0;
 }
 
 bool sh_linker_is_addr_in_elf_pt_load(uintptr_t addr, void *dli_fbase, const ElfW(Phdr) *dlpi_phdr,

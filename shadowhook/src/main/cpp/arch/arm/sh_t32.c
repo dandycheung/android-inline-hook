@@ -248,7 +248,6 @@ static size_t sh_t32_rewrite_ldr(uint16_t *buf, uint16_t high_inst, uint16_t low
       buf[6] = (uint16_t)(0xF9B0 + rt);  // LDRSH.W Rt, [Rt]
       buf[7] = (uint16_t)(rt << 12u);    // ...
     }
-#pragma clang diagnostic pop
     return 16;
   }
 }

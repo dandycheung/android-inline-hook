@@ -28,6 +28,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "sh_config.h"
+
 extern android_LogPriority sh_log_priority;
 
 #define SH_LOG_TAG "shadowhook_tag"

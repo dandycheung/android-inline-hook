@@ -321,12 +321,12 @@ static int sh_inst_thumb_reloc_with_island(sh_inst_t *self, uintptr_t target_add
   // relative jump to the island-exit by overwriting the head of original function
   sh_t32_relative_jump((uint16_t *)new_exit, new_island_exit.addr, pc);
   if (0 != (r = sh_util_write_inst(target_addr, new_exit, self->backup_len))) {
-    sh_island_free(&new_island_exit);
+    sh_island_free(&new_island_exit, (uintptr_t)addr_info->dli_fbase);
     return r;
   }
 
   // OK
-  if (0 != self->island_exit.addr) sh_island_free(&self->island_exit);
+  if (0 != self->island_exit.addr) sh_island_free(&self->island_exit, (uintptr_t)addr_info->dli_fbase);
   self->island_exit = new_island_exit;
   memcpy(self->exit, new_exit, self->backup_len);
 
@@ -481,12 +481,12 @@ static int sh_inst_arm_reloc_with_island(sh_inst_t *self, uintptr_t target_addr,
   // relative jump to the island-exit by overwriting the head of original function
   sh_a32_relative_jump((uint32_t *)new_exit, new_island_exit.addr, pc);
   if (0 != (r = sh_util_write_inst(target_addr, new_exit, self->backup_len))) {
-    sh_island_free(&new_island_exit);
+    sh_island_free(&new_island_exit, (uintptr_t)addr_info->dli_fbase);
     return r;
   }
 
   // OK
-  if (0 != self->island_exit.addr) sh_island_free(&self->island_exit);
+  if (0 != self->island_exit.addr) sh_island_free(&self->island_exit, (uintptr_t)addr_info->dli_fbase);
   self->island_exit = new_island_exit;
   memcpy(self->exit, new_exit, self->backup_len);
 
@@ -572,8 +572,8 @@ int sh_inst_hook(sh_inst_t *self, uintptr_t target_addr, sh_addr_info_t *addr_in
   int r = -1;
   if (SH_UTIL_IS_THUMB(target_addr)) {
     if (NULL == addr_info->dli_saddr && addr_info->is_sym_addr) {
-      if (0 != (r = sh_linker_get_addr_info_by_addr((void *)target_addr, addr_info->is_sym_addr,
-                                                    addr_info->is_proc_start, addr_info, false, NULL, 0)))
+      if (0 != (r = sh_linker_get_addr_info_by_addr(addr_info, (void *)target_addr, addr_info->is_sym_addr,
+                                                    addr_info->is_proc_start, false)))
         goto err;
     }
     target_addr = SH_UTIL_CLEAR_BIT0(target_addr);
@@ -595,8 +595,8 @@ int sh_inst_hook(sh_inst_t *self, uintptr_t target_addr, sh_addr_info_t *addr_in
 #endif
 #ifdef SH_CONFIG_TRY_HOOK_WITHOUT_ISLAND
     if (NULL == addr_info->dli_saddr && addr_info->is_sym_addr) {
-      if (0 != (r = sh_linker_get_addr_info_by_addr((void *)target_addr, addr_info->is_sym_addr,
-                                                    addr_info->is_proc_start, addr_info, false, NULL, 0)))
+      if (0 != (r = sh_linker_get_addr_info_by_addr(addr_info, (void *)target_addr, addr_info->is_sym_addr,
+                                                    addr_info->is_proc_start, false)))
         goto err;
     }
     if (0 == (r = sh_inst_arm_hook_without_island(self, target_addr, addr_info, new_addr, set_orig_addr,
@@ -650,7 +650,7 @@ int sh_inst_rehook(sh_inst_t *self, uintptr_t target_addr, sh_addr_info_t *addr_
   }
 }
 
-int sh_inst_unhook(sh_inst_t *self, uintptr_t target_addr) {
+int sh_inst_unhook(sh_inst_t *self, uintptr_t target_addr, uintptr_t load_bias) {
   int r;
   bool is_thumb = SH_UTIL_IS_THUMB(target_addr);
   if (is_thumb) target_addr = SH_UTIL_CLEAR_BIT0(target_addr);
@@ -668,7 +668,7 @@ int sh_inst_unhook(sh_inst_t *self, uintptr_t target_addr) {
   __atomic_thread_fence(__ATOMIC_SEQ_CST);
 
   // free memory space for island-exit
-  if (0 != self->island_exit.addr) sh_island_free(&self->island_exit);
+  if (0 != self->island_exit.addr) sh_island_free(&self->island_exit, load_bias);
 
   // free memory space for enter
   sh_enter_free(self->enter);

@@ -143,7 +143,7 @@ err:
 }
 
 void sh_trampo_free(sh_trampo_mgr_t *mgr, uintptr_t trampo) {
-  time_t now = sh_util_get_stable_timestamp();
+  uint32_t now = (uint32_t)sh_util_get_stable_timestamp();
   size_t trampo_page_size = sh_util_get_page_size();
   size_t trampo_count = trampo_page_size / mgr->trampo_size;
 

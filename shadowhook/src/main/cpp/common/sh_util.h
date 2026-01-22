@@ -30,12 +30,6 @@
 #include <stdint.h>
 #include <time.h>
 
-#if defined(__arm__) && __ANDROID_API__ < __ANDROID_API_L__
-#define SH_UTIL_COMPATIBLE_WITH_ARM_ANDROID_4_X 1
-#else
-#define SH_UTIL_COMPATIBLE_WITH_ARM_ANDROID_4_X 0
-#endif
-
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wreserved-id-macro"
 #ifndef __ANDROID_API_U__
@@ -63,20 +57,7 @@
 #define SH_UTIL_GET_BIT_64(n, idx)        ((uint64_t)((n) << (63u - (idx))) >> 63u)
 #define SH_UTIL_GET_BITS_64(n, high, low) ((uint64_t)((n) << (63u - (high))) >> (63u - (high) + (low)))
 
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wgnu-statement-expression"
-#define SH_UTIL_MAX(a, b)   \
-  ({                        \
-    __typeof__(a) _a = (a); \
-    __typeof__(b) _b = (b); \
-    _a > _b ? _a : _b;      \
-  })
-#define SH_UTIL_MIN(a, b)   \
-  ({                        \
-    __typeof__(a) _a = (a); \
-    __typeof__(b) _b = (b); \
-    _a < _b ? _a : _b;      \
-  })
+#define SH_UTIL_CONTAINER_OF(ptr, type, field) ((type *)((char *)(ptr) - ((char *)&((type *)0)->field)))
 
 void sh_util_init(void);
 
