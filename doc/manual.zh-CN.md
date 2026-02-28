@@ -1555,11 +1555,11 @@ void register_callback(void) {
 | 13 | Init hub mod failed| hub 模块初始化失败 |
 | 14 | Create hub failed | hook 时，为 shared 模式创建 hub 失败 |
 | 15 | Monitor dlopen failed | 监控 `dlopen()` 失败（只可能会发生在 Android 4.x 中） |
-| 16 | Duplicate shared hook | hook 时，发现在同一个目标地址上，在 shared 模式的 hub 中已经存在了一个相同地址的代理函数 |
+| 16 | Duplicate unique hook | hook 时，发现在同一个目标地址上，已经存在了一个 unique 模式的代理函数 |
 | 17 | Open ELF crashed | hook 或 intercept 时，通过库名和符号名查找目标地址时，在查找目标 ELF 时，由于发生 `SIGSEGV` 或 `SIGBUS` 而导致失败（只可能会发生在 Android 4.x 中） |
 | 18 | Find symbol in ELF failed | hook 或 intercept 时，通过库名和符号名查找目标地址时，在目标 ELF 中未找到该符号 |
 | 19 | Find symbol in ELF crashed | hook 或 intercept 时，通过库名和符号名查找目标地址时，在查找符号时，由于发生 `SIGSEGV` 或 `SIGBUS` 而导致失败 |
-| 20 | Duplicate unique hook | hook 时，发现在同一个目标地址上，已经存在了一个 unique 模式的代理函数 |
+| 20 | Duplicate shared hook | hook 时，发现在同一个目标地址上，在 shared 模式的 hub 中已经存在了一个相同地址的代理函数 |
 | 21 | Dladdr crashed | hook 或 intercept 时，通过目标地址获取符号信息时，由于发生 `SIGSEGV` 或 `SIGBUS` 而导致失败（只可能会发生在 Android 4.x 中） |
 | 22 | Find dlinfo failed | hook 或 intercept 时，通过目标地址获取符号信息时，未找到符号信息 |
 | 23 | Symbol size too small | hook 或 intercept 时，由于目标地址所在函数的后续指令长度不足，导致失败 |

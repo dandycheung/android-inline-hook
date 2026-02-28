@@ -1555,11 +1555,11 @@ void register_callback(void) {
 | 13 | Init hub mod failed| hub module initialization failed |
 | 14 | Create hub failed | When hooking, failed to create a hub for shared mode |
 | 15 | Monitor dlopen failed | Failed to monitor `dlopen()` (can only happen in Android 4.x) |
-| 16 | Duplicate shared hook | When hooking, found that a proxy function with the same address already exists in the shared mode hub at the same target address |
+| 16 | Duplicate unique hook | When hooking, found that a unique mode proxy function already exists at the same target address |
 | 17 | Open ELF crashed | When hooking or intercepting, during the search for the target address via library name and symbol name, the search for the target ELF failed due to `SIGSEGV` or `SIGBUS` (can only happen in Android 4.x) |
 | 18 | Find symbol in ELF failed | When hooking or intercepting, during the search for the target address via library name and symbol name, the symbol was not found in the target ELF |
 | 19 | Find symbol in ELF crashed | When hooking or intercepting, during the search for the target address via library name and symbol name, the search for the symbol failed due to `SIGSEGV` or `SIGBUS` |
-| 20 | Duplicate unique hook | When hooking, found that a unique mode proxy function already exists at the same target address |
+| 20 | Duplicate shared hook | When hooking, found that a proxy function with the same address already exists in the shared mode hub at the same target address |
 | 21 | Dladdr crashed | When hooking or intercepting, getting symbol information via the target address failed due to `SIGSEGV` or `SIGBUS` (can only happen in Android 4.x) |
 | 22 | Find dlinfo failed | When hooking or intercepting, getting symbol information via the target address failed to find symbol information |
 | 23 | Symbol size too small | When hooking or intercepting, failed due to insufficient length of subsequent instructions at the function where the target address is located |
